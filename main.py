@@ -67,32 +67,56 @@ def extract_main_text(html_content):
         return None
 
 
-def extract_snippet(text, keyword, window=50):
-    """
-    Extracts a snippet of text around the first occurrence of 'keyword'.
+import string
 
-    Parameters:
-        text (str): The text to search.
-        keyword (str): The keyword to locate.
-        window (int): Number of characters to include before and after the keyword.
-
-    Returns:
-        str: The snippet around the keyword or an empty string if not found.
+def extract_snippet(text, keyword, window=200):
     """
-    lower_text = text.lower()
-    lower_keyword = keyword.lower()
-    index = lower_text.find(lower_keyword)
-    if index != -1:
-        start = max(0, index - window)
-        end = index + len(keyword) + window
-        return text[start:end]
-    return ""
+    Extracts a snippet of text around the first occurrence of 'keyword',
+    returning two lines:
+      - Line 1: up to `window` words immediately before the keyword.
+      - Line 2: the keyword (which may be multiple words) plus up to `window` words after.
+    """
+    # Split the text into words.
+    words = text.split()
+    # Remove punctuation from the words for matching purposes.
+    words_clean = [w.strip(string.punctuation) for w in words]
+    # Split the keyword into words.
+    keyword_words = keyword.split()
+    keyword_words_lower = [w.lower() for w in keyword_words]
+
+    found_index = None
+    # Loop over the cleaned words to find a sequence that matches the keyword.
+    for i in range(len(words_clean) - len(keyword_words_lower) + 1):
+        if [w.lower() for w in words_clean[i:i + len(keyword_words_lower)]] == keyword_words_lower:
+            found_index = i
+            break
+
+    if found_index is None:
+        return ""
+
+    # Determine the start index for the snippet.
+    start_index = max(0, found_index - window)
+    snippet_before = " ".join(words[start_index:found_index])
+    # Determine the end index for the snippet.
+    end_index = found_index + len(keyword_words_lower) + window
+    snippet_after = " ".join(words[found_index:end_index])
+
+    # Return the two parts separated by a newline.
+    return snippet_before + "\n" + snippet_after
+
 
 
 def fetch_news_articles(warc_path, keywords, max_records=500):
     articles = []
     record_count = 0
     total_records = sum(1 for _ in ArchiveIterator(open(warc_path, 'rb')))
+
+    # List of financial keywords to further filter the articles
+    financial_keywords = [
+        'earnings', 'revenue', 'profit', 'loss', 'quarter', 'guidance',
+        'dividend', 'financial', 'market', 'investment', 'share', 'report',
+        'merger', 'acquisition'
+    ]
 
     try:
         with open(warc_path, 'rb') as warc_file:
@@ -111,7 +135,7 @@ def fetch_news_articles(warc_path, keywords, max_records=500):
                     main_text = extract_main_text(html_text)
                     publish_date = None
 
-                    # Attempt to extract a publish date from metadata
+                    # Attempt to extract publish date from metadata
                     soup = BeautifulSoup(html_text, "lxml")
                     meta_date = soup.find("meta", {"property": "article:published_time"})
                     if meta_date and meta_date.get("content"):
@@ -129,24 +153,56 @@ def fetch_news_articles(warc_path, keywords, max_records=500):
                         if date_match:
                             publish_date = date_match.group(0)
 
-                    # Filter and store matching articles
+                    # Check if the article contains one of the main stock name keywords
                     if main_text and any(keyword.lower() in main_text.lower() for keyword in keywords):
-                        # Extract a snippet using the first matching keyword
-                        snippet = ""
-                        for kw in keywords:
-                            snippet = extract_snippet(main_text, kw, window=50)
-                            if snippet:
+
+                        # 1. Find the first financial keyword in the article.
+                        found_financial_kw = None
+                        for fin_kw in financial_keywords:
+                            if fin_kw in main_text.lower():
+                                found_financial_kw = fin_kw
                                 break
+
+                        if not found_financial_kw:
+                            print("Skip this article - no financial keywords are found")
+                            continue
+
+                        # 2. Extract a snippet around the found financial keyword.
+                        fin_snippet = extract_snippet(main_text, found_financial_kw, window=200)
+
+                        # 3. Find the first stock name keyword in the article.
+                        found_stock_kw = None
+                        stock_snippet = ""
+                        for stock_kw in keywords:
+                            if stock_kw.lower() in main_text.lower():
+                                found_stock_kw = stock_kw
+                                stock_snippet = extract_snippet(main_text, stock_kw, window=200)
+                                if stock_snippet:
+                                    break
+
+                        # **New Check:** Skip the article if both snippets are empty.
+                        if not fin_snippet.strip() and not stock_snippet.strip():
+                            print("Skipping article because both snippets are empty")
+                            continue
+
+                        # 4. Append the article with both snippets.
                         articles.append({
                             'url': url,
                             'text': main_text[:1000],  # Limit to 1000 characters for preview
-                            'snippet': snippet,
+                            'snippet_financial': fin_snippet,
+                            'financial_keyword': found_financial_kw,
+                            'snippet_stock': stock_snippet,
+                            'stock_keyword': found_stock_kw,
                             'publish_date': publish_date,
                         })
                         record_count += 1
                         print(f"Matched article {record_count}: {url}")
                         print(f"Publish Date: {publish_date}")
-                        print(f"Snippet: {snippet}\n")
+                        print(f"Financial Keyword Found: {found_financial_kw}")
+                        print(f"Financial Snippet:\n{fin_snippet}\n")
+                        print(f"Stock Keyword Found: {found_stock_kw}")
+                        print(f"Stock Snippet:\n{stock_snippet}\n")
+
                 except Exception as e:
                     logging.error(f"Error processing WARC record: {e}")
 
@@ -170,6 +226,7 @@ def fetch_news_articles(warc_path, keywords, max_records=500):
 def get_sentiment(text):
     analysis = TextBlob(text)
     polarity = analysis.sentiment.polarity
+    print("polarity: ", polarity)
     if polarity > 0.05:
         return "positive"
     elif polarity < -0.05:
@@ -241,9 +298,10 @@ def evaluate_trades(news_articles, stock_data, lookahead_days=5):
                 x_day_percentage = ((future_close_price - open_price) / open_price) * 100
                 x_day_win = future_close_price > open_price if sentiment == "positive" else future_close_price < open_price
 
-            # Append evaluation results
+            # Append evaluation results including the publish_date
             results.append({
                 'url': article['url'],
+                'publish_date': publish_date,  # Include publish date here
                 'sentiment': sentiment,
                 'day_after_win': day_after_win,
                 'day_after_percentage': day_after_percentage,
@@ -256,6 +314,7 @@ def evaluate_trades(news_articles, stock_data, lookahead_days=5):
             print(f"Error evaluating article {article['url']}: {e}")
 
     return results
+
 
 
 def calculate_metrics(results):
@@ -331,24 +390,41 @@ stock_data = get_stock_data(TICKER, dt_start_pad, dt_end_pad)
 results = evaluate_trades(articles, stock_data, LOOKAHEAD_DAYS)
 print("\n=== TRADE EVALUATION RESULTS ===")
 for r in results:
-    # Handle scalar values or multi-ticker (Series) correctly
+    # Ensure day-after percentage is a scalar
     day_after_percentage = (
-        r['day_after_percentage'].iloc[0]  # Use first value if it's a Series
+        r['day_after_percentage'].iloc[0]
         if isinstance(r['day_after_percentage'], pd.Series)
         else r['day_after_percentage']
     )
+    # Ensure 5-day percentage is a scalar (if available)
     x_day_percentage = (
         r['x_day_percentage'].iloc[0]
         if isinstance(r['x_day_percentage'], pd.Series) and r['x_day_percentage'] is not None
         else r['x_day_percentage']
     )
+    # Ensure day-after win is a scalar boolean
+    day_after_win = (
+        r['day_after_win'].iloc[0]
+        if isinstance(r['day_after_win'], pd.Series)
+        else r['day_after_win']
+    )
+    # Ensure 5-day win is a scalar boolean
+    x_day_win = (
+        r['x_day_win'].iloc[0]
+        if isinstance(r['x_day_win'], pd.Series)
+        else r['x_day_win']
+    )
 
-    print(f"\nURL: {r['url']}\n"
-          f"Sentiment: {r['sentiment']}\n"
-          f"Day-after Win: {r['day_after_win']}\n"
-          f"Day-after %: {day_after_percentage:.2f}%\n"
-          f"{LOOKAHEAD_DAYS}-day Win: {r['x_day_win']}\n"
-          f"{LOOKAHEAD_DAYS}-day %: {x_day_percentage:.2f}%" if x_day_percentage is not None else "X-day %: N/A")
+    print(f"\nURL: {r['url']}")
+    print(f"Publish Date: {r['publish_date']}")
+    print(f"Sentiment: {r['sentiment']}")
+    print(f"Day-after Win: {day_after_win}")
+    print(f"Day-after %: {day_after_percentage:.2f}%")
+    print(f"{LOOKAHEAD_DAYS}-day Win: {x_day_win}")
+    if x_day_percentage is not None:
+        print(f"{LOOKAHEAD_DAYS}-day %: {x_day_percentage:.2f}%")
+    else:
+        print(f"{LOOKAHEAD_DAYS}-day %: N/A")
 
     # Print the snippet from the article
     if 'snippet' in r and r['snippet']:
