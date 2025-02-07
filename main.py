@@ -135,18 +135,6 @@ def fetch_news_articles(warc_path, keywords, max_records=500):
                     main_text = extract_main_text(html_text)
                     publish_date = None
 
-                    # Filter out non-English articles:
-                    if main_text:
-                        try:
-                            # Detect language using TextBlob
-                            language = TextBlob(main_text).detect_language()
-                        except Exception as e:
-                            logging.error(f"Language detection error for {url}: {e}")
-                            continue  # Skip article if language detection fails
-                        if language != "en":
-                            print(f"Skipping non-English article: {url} (detected language: {language})")
-                            continue
-
                     # Attempt to extract publish date from metadata
                     soup = BeautifulSoup(html_text, "lxml")
                     meta_date = soup.find("meta", {"property": "article:published_time"})
