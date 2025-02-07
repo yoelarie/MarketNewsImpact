@@ -135,6 +135,18 @@ def fetch_news_articles(warc_path, keywords, max_records=500):
                     main_text = extract_main_text(html_text)
                     publish_date = None
 
+                    # Filter out non-English articles:
+                    if main_text:
+                        try:
+                            # Detect language using TextBlob
+                            language = TextBlob(main_text).detect_language()
+                        except Exception as e:
+                            logging.error(f"Language detection error for {url}: {e}")
+                            continue  # Skip article if language detection fails
+                        if language != "en":
+                            print(f"Skipping non-English article: {url} (detected language: {language})")
+                            continue
+
                     # Attempt to extract publish date from metadata
                     soup = BeautifulSoup(html_text, "lxml")
                     meta_date = soup.find("meta", {"property": "article:published_time"})
@@ -180,12 +192,12 @@ def fetch_news_articles(warc_path, keywords, max_records=500):
                                 if stock_snippet:
                                     break
 
-                        # **New Check:** Skip the article if one snippet is empty.
+                        # Skip the article if one of the snippets is empty.
                         if not fin_snippet.strip() or not stock_snippet.strip():
-                            print("Skipping article because both snippets are empty")
+                            print("Skipping article because one of the snippets is empty")
                             continue
 
-                        # 4. Append the article with both snippets.
+                        # Append the article with both snippets.
                         articles.append({
                             'url': url,
                             'text': main_text[:1000],  # Limit to 1000 characters for preview
@@ -251,6 +263,7 @@ def get_stock_data(ticker, start_date, end_date):
 def evaluate_trades(news_articles, stock_data, lookahead_days=5):
     """
     Evaluate trading outcomes based on sentiment and historical stock data.
+    Only articles with positive or negative sentiment are kept.
 
     Parameters:
         news_articles (list): List of articles with sentiment analysis.
@@ -270,7 +283,6 @@ def evaluate_trades(news_articles, stock_data, lookahead_days=5):
             if publish_date:
                 news_date = datetime.datetime.strptime(publish_date, "%Y-%m-%d").date()
             else:
-                # If no publish_date is available, skip the article
                 print(f"Skipping article with missing or invalid publish date: {article['url']}")
                 continue
 
@@ -282,6 +294,10 @@ def evaluate_trades(news_articles, stock_data, lookahead_days=5):
 
             # Perform sentiment analysis
             sentiment = get_sentiment(article['text'])
+            # Skip the article if its sentiment is neutral
+            if sentiment == "neutral":
+                print(f"Skipping article due to neutral sentiment: {article['url']}")
+                continue
 
             # Extract stock prices for evaluation
             open_price = stock_data.loc[day_after, 'Open']
@@ -316,7 +332,6 @@ def evaluate_trades(news_articles, stock_data, lookahead_days=5):
     return results
 
 
-
 def calculate_metrics(results):
     """
     Calculate and print interesting metrics based on evaluation results.
@@ -329,13 +344,12 @@ def calculate_metrics(results):
     """
     metrics = {
         'total_articles': len(results),
-        'sentiment_distribution': {'positive': 0, 'neutral': 0, 'negative': 0},
+        'sentiment_distribution': {'positive': 0, 'negative': 0},
         'day_after_success_rate': 0,
         'x_day_success_rate': 0,
         'sentiment_based_success': {'positive': {'day_after': 0, 'x_day': 0},
-                                    'neutral': {'day_after': 0, 'x_day': 0},
                                     'negative': {'day_after': 0, 'x_day': 0}},
-        'sentiment_counts': {'positive': 0, 'neutral': 0, 'negative': 0},
+        'sentiment_counts': {'positive': 0, 'negative': 0},
     }
 
     day_after_success = 0
