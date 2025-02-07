@@ -180,8 +180,8 @@ def fetch_news_articles(warc_path, keywords, max_records=500):
                                 if stock_snippet:
                                     break
 
-                        # **New Check:** Skip the article if both snippets are empty.
-                        if not fin_snippet.strip() and not stock_snippet.strip():
+                        # **New Check:** Skip the article if one snippet is empty.
+                        if not fin_snippet.strip() or not stock_snippet.strip():
                             print("Skipping article because both snippets are empty")
                             continue
 
